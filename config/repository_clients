@@ -1,1 +1,3 @@
+root;lxc-traefik-01;/opt/docker
+root;lxc-traefik-02;/opt/docker
 root;lxc-agh-dns-01;/opt/docker

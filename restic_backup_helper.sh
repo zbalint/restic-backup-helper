@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export HOME=/root
+
 # directory consts
 readonly BASE_DIRECTORY="/root/restic_backup"
 readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
