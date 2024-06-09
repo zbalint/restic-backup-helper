@@ -186,7 +186,7 @@ function sshfs_mount() {
     local local_path="$4"
     local sshfs_options="$5"
 
-    rm -f ~/.ssh/known_hosts && \
+    rm -f ~/.ssh/known_hosts
     ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts && \
     sshfs -o "${sshfs_options}" "${remote_user}@${remote_host}:${remote_path}" "${local_path}" && \
     dir_is_exists "${local_path}" && \
