@@ -149,6 +149,7 @@ function validate_script_permissions() {
 
 function update_repository_clients_file() {
     wget --quiet "${REPOSITORY_CLIENTS_FILE_URL}" -O "${REPOSITORY_CLIENTS_FILE}"
+    echo >> "${REPOSITORY_CLIENTS_FILE}"
     chmod 600 "${REPOSITORY_CLIENTS_FILE}"
 }
 
@@ -317,7 +318,9 @@ function backup_clients() {
 
     while IFS= read -r client
     do
-        backup_client "${client}"
+        if [ -n "${client}" ]; then
+            backup_client "${client}"
+        fi
     done < "${repository_clients_list}"
 
     restic_forget && \
