@@ -8,6 +8,7 @@ readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
 readonly REPOSITORY_PATH_FILE="${CONFIG_DIRECTORY}/repository_path"
 readonly REPOSITORY_PASS_FILE="${CONFIG_DIRECTORY}/repository_pass"
 readonly REPOSITORY_CLIENTS_FILE="${CONFIG_DIRECTORY}/repository_clients"
+readonly REPOSITORY_CLIENTS_FILE_URL="https://raw.githubusercontent.com/zbalint/restic-backup-helper/master/config/repository_clients"
 
 readonly REPOSITORY_RETENTION_KEEP_YEARLY=3
 readonly REPOSITORY_RETENTION_KEEP_MONTHLY=24
@@ -143,6 +144,11 @@ function validate_script_permissions() {
         echo "  chmod 0700 $(realpath "${BASH_SOURCE[0]}")"
         exit 1
     fi
+}
+
+function update_repository_clients_file() {
+    wget --quiet "${REPOSITORY_CLIENTS_FILE_URL}" -O "${REPOSITORY_CLIENTS_FILE}"
+    chmod 600 "${REPOSITORY_CLIENTS_FILE}"
 }
 
 function validate_config_files_and_permissions() {
@@ -449,6 +455,7 @@ function main() {
     validate_restic_installation
     validate_sshfs_installation
     validate_script_permissions
+    update_repository_clients_file
     validate_config_files_and_permissions
 
     if test $# = 0; then
