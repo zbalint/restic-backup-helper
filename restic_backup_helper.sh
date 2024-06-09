@@ -252,7 +252,7 @@ function restic_backup() {
     local backup_tag="$2"
     local backup_host="$3"
 
-    call_restic backup "${backup_path}" --tag "${backup_tag}" --host "${backup_host}"
+    call_restic backup --no-scan "${backup_path}" --tag "${backup_tag}" --host "${backup_host}"
 }
 
 function restic_restore() {
