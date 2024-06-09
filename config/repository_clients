@@ -2,4 +2,6 @@ root;lxc-traefik-01;/opt/docker
 root;lxc-traefik-02;/opt/docker
 root;lxc-searxng-01;/opt/docker
 root;lxc-searxng-02;/opt/docker
+root;lxc-technitium-01;/opt/docker
+root;lxc-technitium-02;/opt/docker
 root;lxc-agh-dns-01;/opt/docker
