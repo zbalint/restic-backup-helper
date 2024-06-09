@@ -212,7 +212,10 @@ function healthcheck() {
             curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"/start
             ;;
         stop)
-            curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
+            local status_payload
+            status_payload=$(status 2>&1)
+            # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
+            curl -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}"
             ;;
     esac
     
