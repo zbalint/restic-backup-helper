@@ -1,3 +1,5 @@
+root;srv01-prd-defra-oci;/opt/docker
+root;srv02-prd-defra-oci;/opt/docker
 root;lxc-traefik-01;/opt/docker
 root;lxc-traefik-02;/opt/docker
 root;lxc-searxng-01;/opt/docker
