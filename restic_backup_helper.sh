@@ -2,6 +2,9 @@
 
 export HOME=/root
 
+readonly BACKUP_SCRIPT_NAME=$(basename "$0")
+readonly BACKUP_SCRIPT_URL="https://raw.githubusercontent.com/zbalint/restic-backup-helper/master/restic_backup_helper.sh"
+
 # directory consts
 readonly BASE_DIRECTORY="/root/restic_backup"
 readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
@@ -29,7 +32,7 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
-readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup enable disable help)
+readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
 
 # readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
 readonly BACKUP_FREQUENCY="hourly"
@@ -372,7 +375,7 @@ function backup_clients() {
 
     healthcheck "start"
 
-    echo "Restic backup result:" > "${status_file}"
+    echo "Backup result:" > "${status_file}"
 
     while IFS= read -r client
     do
@@ -464,6 +467,24 @@ function restore() { # [user@host:path] = Restore data from snapshot (default 'l
 
 function cleanup() { # = Remove snapshots without client
     restic_cleanup
+}
+
+function update() { # = Update this script from github
+    local backup_script_url="${BACKUP_SCRIPT_URL}"
+    local backup_script_temp_path="/tmp/${BACKUP_SCRIPT_NAME}.temp"
+    local backup_script_path="${BASE_DIRECTORY}/${BACKUP_SCRIPT_NAME}"
+
+    echo "Downloading the latest version of the script..."
+    if curl -s -o "${backup_script_temp_path}" "${backup_script_url}"; then
+        echo "Download complete. Updating the script..."
+        chmod 700 "${backup_script_temp_path}"
+        mv "${backup_script_temp_path}" "${backup_script_path}"
+        echo "Update complete. Restarting the script..."
+        exec ./"${BACKUP_SCRIPT_NAME}" "help"
+    else
+        echo "Failed to download the latest version. Keeping the current version."
+        rm "${backup_script_temp_path}"
+    fi
 }
 
 function snapshots() { # = List all snapshots
