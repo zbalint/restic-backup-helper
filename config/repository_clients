@@ -9,3 +9,4 @@ root;lxc-technitium-02;/opt/docker
 root;lxc-netbootxyz;/opt/docker
 root;lxc-adguardhome-sync;/opt/docker
 root;lxc-paperless-ngx;/opt/docker
+root;lxc-linkwarden;/opt/docker
