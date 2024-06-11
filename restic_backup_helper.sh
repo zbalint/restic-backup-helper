@@ -33,9 +33,10 @@ readonly COMMANDS=(init backup trigger forget prune status logs snapshots restor
 
 # readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
 readonly BACKUP_FREQUENCY="hourly"
-readonly BACKUP_NAME=restic_backup
-readonly BACKUP_SERVICE=/etc/systemd/system/${BACKUP_NAME}.service
-readonly BACKUP_TIMER=/etc/systemd/system/${BACKUP_NAME}.timer
+readonly BACKUP_NAME="restic_backup"
+readonly BACKUP_SERVICE="/etc/systemd/system/${BACKUP_NAME}.service"
+readonly BACKUP_TIMER="/etc/systemd/system/${BACKUP_NAME}.timer"
+readonly BACKUP_RESULT_FILE="/tmp/restic_backup_client_status"
 
 function validate_file_permission() {
     local file="$1"
@@ -189,6 +190,11 @@ function sshfs_mount() {
     local local_path="$4"
     local sshfs_options="$5"
 
+    if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
+        echo "The ${local_path} path is already mounted!"
+        return 1
+    fi
+
     rm -f ~/.ssh/known_hosts
     ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts && \
     sshfs -o "${sshfs_options}" "${remote_user}@${remote_host}:${remote_path}" "${local_path}" && \
@@ -200,6 +206,8 @@ function sshfs_mount() {
 function sshfs_umount() {
     local local_path="$1"
 
+    dir_is_exists "${local_path}" && \
+    dir_is_mounted "${local_path}" && \
     umount "${local_path}"
 }
 
@@ -219,6 +227,12 @@ function healthcheck() {
             status_payload=$(status 2>&1)
             # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
             curl -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}"
+            ;;
+        failed)
+            local status_payload
+            status_payload=$(status 2>&1)
+            # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
+            curl -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}/fail"
             ;;
     esac
     
@@ -310,24 +324,36 @@ function backup_client() {
     
     sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${SSHFS_BACKUP_OPTIONS}" && \
     create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
+    local backup_result=$?
     sshfs_umount "${local_path}"
+    return ${backup_result}
 }
 
 function backup_clients() {
     local repository_clients_list="${REPOSITORY_CLIENTS_FILE}"
+    local status_file="${BACKUP_RESULT_FILE}"
+    local status=0
 
-    healthcheck "start"
+    echo "Restic backup result:" > "${status_file}"
 
     while IFS= read -r client
     do
         if [ -n "${client}" ]; then
-            backup_client "${client}"
+            if backup_client "${client}"; then
+                echo "Restic backup for client '${client}' was seccuessful!"
+                echo "[OK   ] ${client}" >> "${status_file}"
+            else
+                echo "Restic backup for client '${client}' failed!"
+                echo "[ERROR] ${client}" >> "${status_file}"
+                status=1
+            fi
         fi
     done < "${repository_clients_list}"
 
-    restic_forget && \
-    restic_check && \
-    healthcheck "stop"
+    if ! restic_forget && restic_check; then
+        return 1
+    fi
+    return ${status}
 }
 
 function restore_client() {
@@ -376,6 +402,7 @@ function forget() { # = Apply the configured data retention policy to the backen
 }
 
 function backup() { # = Run backup now
+    healthcheck "start"
     ## Test if running in a terminal and have enabled the backup service:
     if [[ -t 0 ]] && [[ -f ${BACKUP_SERVICE} ]]; then
         ## Run by triggering the systemd unit, so everything gets logged:
@@ -385,13 +412,17 @@ function backup() { # = Run backup now
         echo "Restic backup finished successfully."
     else
         echo "Restic backup failed!"
+        healthcheck "failed"
         exit 1
     fi
+    healthcheck "stop"
 }
 
 function restore() { # [user@host:path] = Restore data from snapshot (default 'latest')
     local client="$1"
+    disable
     restore_client "${client}"
+    enable
 }
 
 function snapshots() { # = List all snapshots
@@ -440,6 +471,10 @@ function status() { # = Show the last and next backup times
     do
         echo "${client}"
     done < "${repository_clients_list}"
+
+    # show backup result for each client
+    cat ${BACKUP_RESULT_FILE}
+    
     # show repo path
     echo "Repository path: $(get_repository_path)"
 
