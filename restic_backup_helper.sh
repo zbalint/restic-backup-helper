@@ -29,7 +29,7 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
-readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore enable disable help)
+readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup enable disable help)
 
 # readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
 readonly BACKUP_FREQUENCY="hourly"
@@ -126,6 +126,12 @@ function get_local_path() {
 
     mkdir -p "${local_path}"
     echo "${local_path}"
+}
+
+function convert_client_to_tag() {
+    local client="$1"
+
+    echo "${client}" | awk -F";" '{print $1"@"$2":"$3}'
 }
 
 function validate_restic_installation() {
@@ -268,6 +274,27 @@ function restic_forget() {
     --prune
 }
 
+function restic_cleanup() {
+    local clients_marked_for_cleanup_file="/tmp/restic_cleanup_clients_list"
+    find_tags_without_client > "${clients_marked_for_cleanup_file}"
+
+    while IFS= read -r client
+    do
+        if [ -n "${client}" ]; then
+            echo "Removing missing client's snapshots: ${client}"
+            local host
+            local path
+            local tag
+            host=$(get_remote_host "${client}")
+            path=/mnt/${host}/$(get_remote_path "${client}")
+            tag=$(convert_client_to_tag "${client}")
+
+            call_restic forget --group-by host --host "${host}" --keep-last 1
+            call_restic forget latest --group-by host --host "${host}" --tag "${tag}" --path "${path}"
+        fi
+    done < "${clients_marked_for_cleanup_file}"
+}
+
 function restic_backup() {
     local backup_path="$1"
     local backup_tag="$2"
@@ -283,6 +310,15 @@ function restic_restore() {
     local backup_path="$4"
 
     call_restic restore latest --tag "${backup_tag}" --host "${backup_host}" --path "${backup_path}" --target "${restore_path}"
+}
+
+function find_tags_without_client() {
+    local tag_list_temp_file="/tmp/restic_tag_list"
+    local client_list_file="${REPOSITORY_CLIENTS_FILE}"
+
+    call_restic snapshots -c | awk '{print $5}' | grep "\@" | sort | uniq | tr "@" ";" | tr ":" ";" > "${tag_list_temp_file}"
+
+    sort "${tag_list_temp_file}" "${client_list_file}" | uniq -u
 }
 
 function create_repository() {
@@ -426,6 +462,10 @@ function restore() { # [user@host:path] = Restore data from snapshot (default 'l
     enable
 }
 
+function cleanup() { # = Remove snapshots without client
+    restic_cleanup
+}
+
 function snapshots() { # = List all snapshots
     call_restic snapshots
 }
@@ -467,7 +507,7 @@ function disable() { # = Disable scheduled backups and remove systemd timer
 function status() { # = Show the last and next backup times 
     local repository_clients_list="${REPOSITORY_CLIENTS_FILE}"
     # list clients
-    echo "Backup clients:"
+    echo "Backup clients: $(< "${repository_clients_list}" wc -l)"
     while IFS= read -r client
     do
         echo "${client}"
@@ -475,6 +515,9 @@ function status() { # = Show the last and next backup times
 
     # show backup result for each client
     cat ${BACKUP_RESULT_FILE}
+
+    echo "Missing clients: $(find_tags_without_client | wc -l)"
+    find_tags_without_client
     
     # show repo path
     echo "Repository path: $(get_repository_path)"
