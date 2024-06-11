@@ -334,13 +334,15 @@ function backup_clients() {
     local status_file="${BACKUP_RESULT_FILE}"
     local status=0
 
+    healthcheck "start"
+
     echo "Restic backup result:" > "${status_file}"
 
     while IFS= read -r client
     do
         if [ -n "${client}" ]; then
             if backup_client "${client}"; then
-                echo "Restic backup for client '${client}' was seccuessful!"
+                echo "Restic backup for client '${client}' was successful!"
                 echo "[OK   ] ${client}" >> "${status_file}"
             else
                 echo "Restic backup for client '${client}' failed!"
@@ -402,7 +404,6 @@ function forget() { # = Apply the configured data retention policy to the backen
 }
 
 function backup() { # = Run backup now
-    healthcheck "start"
     ## Test if running in a terminal and have enabled the backup service:
     if [[ -t 0 ]] && [[ -f ${BACKUP_SERVICE} ]]; then
         ## Run by triggering the systemd unit, so everything gets logged:
@@ -410,12 +411,12 @@ function backup() { # = Run backup now
     ## Not running interactive, or haven't run 'enable' yet, so run directly:
     elif backup_clients; then
         echo "Restic backup finished successfully."
+        healthcheck "stop"
     else
         echo "Restic backup failed!"
         healthcheck "failed"
         exit 1
     fi
-    healthcheck "stop"
 }
 
 function restore() { # [user@host:path] = Restore data from snapshot (default 'latest')
