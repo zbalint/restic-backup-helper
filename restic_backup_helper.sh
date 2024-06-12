@@ -34,8 +34,8 @@ readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha
 # script settings
 readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
 
-# readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
-readonly BACKUP_FREQUENCY="hourly"
+# readonly BACKUP_FREQUENCY="hourly"
+readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
 readonly BACKUP_NAME="restic_backup"
 readonly BACKUP_SERVICE="/etc/systemd/system/${BACKUP_NAME}.service"
 readonly BACKUP_TIMER="/etc/systemd/system/${BACKUP_NAME}.timer"
