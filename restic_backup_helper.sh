@@ -889,23 +889,21 @@ function main() {
     else
         CMD=$1; shift;
         if [[ " ${COMMANDS[*]} " =~ ${CMD} ]]; then
-            if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]]; then
-                if is_remote_repository; then
-                    if is_run_by_systemd_timer; then
-                        echo "Defer mounting repository storage server..." 
+            if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]] && is_remote_repository; then
+                if is_run_by_systemd_timer; then
+                    echo "Defer mounting repository storage server..." 
+                else
+                    echo "Mounting repository storage server..."
+                    if sshfs_mount_server; then 
+                        echo "Respository storage server is mounted!"
                     else
-                        echo "Mounting repository storage server..."
-                        if sshfs_mount_server; then 
-                            echo "Respository storage server is mounted!"
-                        else
-                            echo "Respository storage server is unavaliable!"
-                            exit 1 
-                        fi
+                        echo "Respository storage server is unavaliable!"
+                        exit 1 
                     fi
                 fi
-            else
-                ${CMD} "$@"
             fi
+
+            ${CMD} "$@"
         else
             echo "Unknown command: ${CMD}" && exit 1
         fi
