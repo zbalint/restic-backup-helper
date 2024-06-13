@@ -36,8 +36,8 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
-readonly RESTIC_COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup)
-readonly COMMANDS=(install init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
+readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore cleanup)
+readonly COMMANDS=(install init backup trigger forget prune status snapshots restore cleanup logs update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
 readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
@@ -890,7 +890,7 @@ function main() {
         CMD=$1; shift;
         if [[ " ${COMMANDS[*]} " =~ ${CMD} ]]; then
             if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]] && is_remote_repository; then
-                if is_run_by_systemd_timer; then
+                if [ "${CMD}" = "backup" ] && is_run_by_systemd_timer; then
                     echo "Defer mounting repository storage server..." 
                 else
                     echo "Mounting repository storage server..."
