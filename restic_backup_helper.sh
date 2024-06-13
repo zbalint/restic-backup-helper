@@ -8,10 +8,13 @@ readonly BACKUP_SCRIPT_URL="https://raw.githubusercontent.com/zbalint/restic-bac
 # directory consts
 readonly BASE_DIRECTORY="/root/restic_backup"
 readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
+readonly WORK_DIRECTORY="${BASE_DIRECTORY}/work"
 
 # repository settings consts
+readonly REPOSITORY_TYPE_FILE="${CONFIG_DIRECTORY}/repository_type"
 readonly REPOSITORY_PATH_FILE="${CONFIG_DIRECTORY}/repository_path"
 readonly REPOSITORY_PASS_FILE="${CONFIG_DIRECTORY}/repository_pass"
+readonly REPOSITORY_SERVER_FILE="${CONFIG_DIRECTORY}/repository_server"
 readonly REPOSITORY_CLIENTS_FILE="${CONFIG_DIRECTORY}/repository_clients"
 readonly REPOSITORY_CLIENTS_FILE_URL="https://raw.githubusercontent.com/zbalint/restic-backup-helper/master/config/repository_clients"
 
@@ -27,19 +30,48 @@ readonly HEALTHCHECKS_IO_ID_FILE="${CONFIG_DIRECTORY}/healthchecks_io_id"
 
 # sshfs settings consts
 readonly LOCAL_MOUNT_PATH="/mnt"
-readonly LOCAL_MOUNT_PATH_LIST_FILE="/tmp/restic_mount_path_list"
+readonly LOCAL_MOUNT_PATH_LIST_FILE="${WORK_DIRECTORY}/restic_mount_path_list"
+readonly SSHFS_SERVER_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
-readonly COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
+readonly COMMANDS=(install init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
 readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
 readonly BACKUP_NAME="restic_backup"
 readonly BACKUP_SERVICE="/etc/systemd/system/${BACKUP_NAME}.service"
 readonly BACKUP_TIMER="/etc/systemd/system/${BACKUP_NAME}.timer"
-readonly BACKUP_RESULT_FILE="/tmp/restic_backup_client_status"
+readonly BACKUP_RESULT_FILE="${WORK_DIRECTORY}/restic_backup_client_status"
+
+trap __cleanup EXIT
+
+function __cleanup() {
+    local mount_path_list_file="${LOCAL_MOUNT_PATH_LIST_FILE}"
+    local temp_file="${LOCAL_MOUNT_PATH_LIST_FILE}.tmp"
+
+    if file_is_exists "${mount_path_list_file}"; then
+        while IFS= read -r mount_path
+        do
+            if [ -n "${mount_path}" ] && dir_is_exists "${mount_path}" && dir_is_mounted "${mount_path}" ; then
+                echo -n "Unmounting ${mount_path}..."
+                if sshfs_umount "${mount_path}"; then
+                    echo "OK"
+                else 
+                    echo "FAILED"
+                    echo "${mount_path}" >> "${temp_file}"
+                fi
+            fi
+        done < "${mount_path_list_file}"
+        
+        rm "${mount_path_list_file}"
+        
+        if file_is_exists "${temp_file}"; then
+            mv "${temp_file}" "${mount_path_list_file}"
+        fi
+    fi
+}
 
 function validate_file_permission() {
     local file="$1"
@@ -88,6 +120,16 @@ function read_file() {
     cat "${file}"
 }
 
+function save_mount_path() {
+    local mount_path="$1"
+
+    echo "${mount_path}" >> "${LOCAL_MOUNT_PATH_LIST_FILE}"
+}
+
+function get_repository_type() {
+    read_file "${REPOSITORY_TYPE_FILE}"
+}
+
 function get_repository_path() {
     read_file "${REPOSITORY_PATH_FILE}"
 }
@@ -96,14 +138,12 @@ function get_repository_password() {
     read_file "${REPOSITORY_PASS_FILE}"
 }
 
-function get_healthchecks_io_id() {
-    read_file "${HEALTHCHECKS_IO_ID_FILE}"
+function get_repository_server() {
+    read_file "${REPOSITORY_SERVER_FILE}"
 }
 
-function save_mount_path() {
-    local mount_path="$1"
-
-    echo "${mount_path}" >> "${LOCAL_MOUNT_PATH_LIST_FILE}"
+function get_healthchecks_io_id() {
+    read_file "${HEALTHCHECKS_IO_ID_FILE}"
 }
 
 function get_remote_user() {
@@ -137,15 +177,63 @@ function convert_client_to_tag() {
     echo "${client}" | awk -F";" '{print $1"@"$2":"$3}'
 }
 
+function is_local_repository() {
+    local repository_type
+    repository_type="$(get_repository_type)"
+
+    if [ "${repository_type}" = "local" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+function is_remote_repository() {
+    local repository_type
+    repository_type="$(get_repository_type)"
+
+    if [ "${repository_type}" = "remote" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+function is_installed() {
+    local command="$1"
+
+    if command -v "${command}" >/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
+function is_restic_installed() {
+    if is_installed "restic"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function is_sshfs_installed() {
+    if is_installed "sshfs"; then
+        return 0
+    fi
+
+    return 1
+}
+
 function validate_restic_installation() {
-    if ! command -v restic >/dev/null; then
+    if ! is_restic_installed; then
         echo "You need to install restic."
         exit 1
     fi
 }
 
 function validate_sshfs_installation() {
-    if ! command -v sshfs >/dev/null; then
+    if ! is_sshfs_installed; then
         echo "You need to install sshfs."
         exit 1
     fi
@@ -165,31 +253,118 @@ function update_repository_clients_file() {
     chmod 600 "${REPOSITORY_CLIENTS_FILE}"
 }
 
+function validate_repository_type_file() {
+    if file_is_exists "${REPOSITORY_TYPE_FILE}" && validate_file_permission "${REPOSITORY_TYPE_FILE}" "600"; then
+        if is_local_repository || is_remote_repository; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+function validate_repository_server_file() {
+    if file_is_exists "${REPOSITORY_SERVER_FILE}" && validate_file_permission "${REPOSITORY_SERVER_FILE}" "600"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function validate_repository_path_file() {
+    if file_is_exists "${REPOSITORY_PATH_FILE}" && validate_file_permission "${REPOSITORY_PATH_FILE}" "600"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function validate_repository_pass_file() {
+    if file_is_exists "${REPOSITORY_PASS_FILE}" && validate_file_permission "${REPOSITORY_PASS_FILE}" "600"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function validate_repository_clients_file() {
+    if file_is_exists "${REPOSITORY_CLIENTS_FILE}" && validate_file_permission "${REPOSITORY_CLIENTS_FILE}" "600"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function validate_healthchecks_io_id_file() {
+    if file_is_exists "${HEALTHCHECKS_IO_ID_FILE}" && validate_file_permission "${HEALTHCHECKS_IO_ID_FILE}" "600"; then
+        return 0
+    fi
+
+    return 1
+}
+
+
 function validate_config_files_and_permissions() {
 
-    if ! file_is_exists "${REPOSITORY_PATH_FILE}" || ! validate_file_permission "${REPOSITORY_PATH_FILE}" "600"; then
+    if validate_repository_type_file; then
+        if is_remote_repository && ! validate_repository_server_file; then
+            echo "File does not exists or has incorrect permissions. Run: "
+            echo "  chmod 0600 $(realpath ${REPOSITORY_SERVER_FILE})"
+            exit 1
+        fi
+    else
+        echo "File does not exists or has incorrect permissions or contains invalid repository type. Run: "
+        echo "  chmod 0600 $(realpath ${REPOSITORY_TYPE_FILE})"
+        exit 1
+    fi
+
+    if ! validate_repository_path_file; then
         echo "File does not exists or has incorrect permissions. Run: "
         echo "  chmod 0600 $(realpath ${REPOSITORY_PATH_FILE})"
         exit 1
     fi
 
-    if ! file_is_exists "${REPOSITORY_PASS_FILE}" || ! validate_file_permission "${REPOSITORY_PASS_FILE}" "600"; then
+    if ! validate_repository_pass_file; then
         echo "File does not exists or has incorrect permissions. Run: "
         echo "  chmod 0600 $(realpath ${REPOSITORY_PASS_FILE})"
         exit 1
     fi
 
-    if ! file_is_exists "${REPOSITORY_CLIENTS_FILE}" || ! validate_file_permission "${REPOSITORY_CLIENTS_FILE}" "600"; then
+    if ! validate_repository_clients_file; then
         echo "File does not exists or has incorrect permissions. Run: "
         echo "  chmod 0600 $(realpath ${REPOSITORY_CLIENTS_FILE})"
         exit 1
     fi
 
-    if ! file_is_exists "${HEALTHCHECKS_IO_ID_FILE}" || ! validate_file_permission "${HEALTHCHECKS_IO_ID_FILE}" "600"; then
+    if ! validate_healthchecks_io_id_file; then
         echo "File does not exists or has incorrect permissions. Run: "
         echo "  chmod 0600 $(realpath ${HEALTHCHECKS_IO_ID_FILE})"
         exit 1
     fi
+}
+
+function validate_install() {
+    if validate_repository_type_file; then
+        if is_remote_repository && ! validate_repository_server_file; then
+            return 1
+        fi
+    else 
+        return 1
+    fi
+ 
+    if ! validate_repository_path_file; then
+        return 1
+    elif ! validate_repository_pass_file; then
+        return 1
+    elif ! validate_repository_clients_file; then
+        return 1
+    elif ! validate_healthchecks_io_id_file; then
+        return 1
+    else 
+        return 0
+    fi
+
+    return 1
 }
 
 function sshfs_mount() {
@@ -219,6 +394,40 @@ function sshfs_umount() {
     dir_is_mounted "${local_path}" && \
     umount "${local_path}"
 }
+
+function sshfs_mount_server() {
+    local repository_server
+    local repository_server_user
+    local repository_server_host
+    local repository_remote_path
+    local repository_local_path
+
+    repository_server="$(get_repository_server)"
+    repository_server_user="$(get_remote_user "${repository_server}")"
+    repository_server_host="$(get_remote_host "${repository_server}")"
+    repository_remote_path="$(get_remote_path "${repository_server}")"
+    repository_local_path="$(get_repository_path)"
+    mkdir -p "${repository_local_path}" && \
+    sshfs_mount "${repository_server_user}" "${repository_server_host}" "${repository_remote_path}" "${repository_local_path}" "${SSHFS_SERVER_OPTIONS}"
+}
+
+function sshfs_umount_server() {
+    sshfs_umount "$(get_repository_path)"
+}
+
+function sshfs_remount_server() {
+    local repository_path
+    repository_path="$(get_repository_path)"
+
+    if dir_is_exists "${repository_path}" && dir_is_mounted "${repository_path}"; then
+        sshfs_umount_server
+    elif ! dir_is_exists "${repository_path}"; then
+        mkdir -p "${repository_path}"
+    fi
+
+    sshfs_mount_server
+}
+
 
 function healthcheck() {
     local status="$1"
@@ -278,7 +487,7 @@ function restic_forget() {
 }
 
 function restic_cleanup() {
-    local clients_marked_for_cleanup_file="/tmp/restic_cleanup_clients_list"
+    local clients_marked_for_cleanup_file="${WORK_DIRECTORY}/restic_cleanup_clients_list"
     find_tags_without_client > "${clients_marked_for_cleanup_file}"
 
     while IFS= read -r client
@@ -316,7 +525,7 @@ function restic_restore() {
 }
 
 function find_tags_without_client() {
-    local tag_list_temp_file="/tmp/restic_tag_list"
+    local tag_list_temp_file="${WORK_DIRECTORY}/restic_tag_list"
     local client_list_file="${REPOSITORY_CLIENTS_FILE}"
 
     call_restic snapshots -c | awk '{print $5}' | grep "\@" | sort | uniq | tr "@" ";" | tr ":" ";" > "${tag_list_temp_file}"
@@ -391,7 +600,7 @@ function backup_clients() {
         fi
     done < "${repository_clients_list}"
 
-    if ! restic_forget && restic_check; then
+    if ! restic_forget || ! restic_check; then
         return 1
     fi
     return ${status}
@@ -425,6 +634,104 @@ function help() { # = Show this help
     done
 }
 
+function install_restic() {
+    apt install -y restic && restic self-update
+}
+
+function install_sshfs() {
+    apt install -y sshfs
+}
+
+function install() { # = Create required configuration files
+    local repository_type
+    local repository_server
+    local repository_path
+    local repository_pass
+    local healthchecks_io_id
+    local answer
+
+    if validate_install; then
+        read -r -p "The configuration files already exists! Do you want to rewrite ALL the existsing files? (yes/no): " answer
+
+        if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+            answer=""
+            echo "Proceed with caution! This operation will overwrite any existing configuration file."
+        elif [ "${answer}" = "no" ] || [ "${answer}" = "NO" ] || [ "${answer}" = "n" ] || [ "${answer}" = "N" ]; then
+            echo "Phuh! Dodged a bullet..."
+            exit 0
+        else
+            echo "Invalid answer!"
+            exit 1
+        fi
+    fi
+
+    echo "Creating directories..."
+    
+    echo "Creating base directory at ${BASE_DIRECTORY}" 
+    mkdir -p ${BASE_DIRECTORY} 
+    echo "Creating config directory at ${CONFIG_DIRECTORY}"
+    mkdir -p ${CONFIG_DIRECTORY} 
+    echo "Creating work directory at ${WORK_DIRECTORY}"
+    mkdir -p ${WORK_DIRECTORY} 
+    
+    echo "Please answer the following questions to install the backup script configuration."
+
+    read -r -p "Repository type (ex.: local or remote): " repository_type && echo "${repository_type:-local}" > "${REPOSITORY_TYPE_FILE}" && chmod 600 "${REPOSITORY_TYPE_FILE}"
+    if [ "${repository_type}" = "remote" ]; then
+        read -r -p "Repository server (ex.: user;host;/path): " repository_server && echo "${repository_server}" > "${REPOSITORY_SERVER_FILE}" && chmod 600 "${REPOSITORY_SERVER_FILE}"
+    fi
+
+    read -r -p "Repository path (ex.: /repository): " repository_path && echo "${repository_path:-/repository}" > "${REPOSITORY_PATH_FILE}" && chmod 600 "${REPOSITORY_PATH_FILE}"
+
+    read -r -sp "Repository password (hidden): " repository_pass && echo "********" && echo "${repository_pass}" > "${REPOSITORY_PASS_FILE}" && chmod 600 "${REPOSITORY_PASS_FILE}"
+
+    read -r -p "Healthcheck.io ID: " healthchecks_io_id && echo "${healthchecks_io_id}" > "${HEALTHCHECKS_IO_ID_FILE}" && chmod 600 "${HEALTHCHECKS_IO_ID_FILE}"
+
+    if ! is_restic_installed; then
+        read -r -p "Do you wish to install restic? (you can do it later manually) (yes/no): " answer
+        if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+            answer=""
+            install_restic
+        fi
+    fi
+
+    if ! is_sshfs_installed; then
+        read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
+        if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+            answer=""
+            install_sshfs
+        fi
+    fi
+
+    read -r -p "Do you wish to initialize the repository? (you can do it later with the 'init' command) (yes/no): " answer
+    if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+        answer=""
+        if is_remote_repository && [ "${CMD}" != "install" ]; then
+            if sshfs_mount_server; then 
+                local result
+                init
+                sshfs_umount_server
+            else
+                echo "Respository storage server is unavaliable!"
+                exit 1
+            fi
+        fi
+    fi
+
+
+    read -r -p "Do you wish to enable the systemd timer? (you can do it later with the 'enable' command) (yes/no): " answer
+    if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+        answer=""
+        enable
+    fi
+
+    read -r -p "Do you wish to update the script? (you can do it later with the 'update' command) (yes/no): " answer
+    if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+        answer=""
+        update
+    fi
+}
+
 function init() { # = Initialize restic repository
     create_repository
 }
@@ -440,6 +747,14 @@ function prune() { # = Remove old snapshots from repository
 
 function forget() { # = Apply the configured data retention policy to the backend
     restic_forget
+}
+
+function is_run_by_systemd_timer() {
+    if [[ -t 0 ]] && [[ -f ${BACKUP_SERVICE} ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 function backup() { # = Run backup now
@@ -471,7 +786,7 @@ function cleanup() { # = Remove snapshots without client
 
 function update() { # = Update this script from github
     local backup_script_url="${BACKUP_SCRIPT_URL}"
-    local backup_script_temp_path="/tmp/${BACKUP_SCRIPT_NAME}.temp"
+    local backup_script_temp_path="${WORK_DIRECTORY}/${BACKUP_SCRIPT_NAME}.temp"
     local backup_script_path="${BASE_DIRECTORY}/${BACKUP_SCRIPT_NAME}"
 
     echo "Downloading the latest version of the script..."
@@ -561,9 +876,10 @@ function logs() { # = Show recent service logs
 }
 
 function main() {
+    validate_script_permissions
+    if ! validate_install; then install; fi
     validate_restic_installation
     validate_sshfs_installation
-    validate_script_permissions
     update_repository_clients_file
     validate_config_files_and_permissions
 
@@ -572,6 +888,24 @@ function main() {
     else
         CMD=$1; shift;
         if [[ " ${COMMANDS[*]} " =~ ${CMD} ]]; then
+            if [ "${CMD}" = "install" ]; then
+                echo "Starting installation procedure..."
+                install
+                return $?
+            elif is_remote_repository; then
+                if is_run_by_systemd_timer; then
+                    echo "Defer mounting repository storage server..." 
+                else
+                    echo "Mounting repository storage server..."
+                    if sshfs_mount_server; then 
+                        echo "Respository storage server is mounted!"
+                    else
+                        echo "Respository storage server is unavaliable!"
+                        exit 1 
+                    fi
+                fi
+            fi
+            
             ${CMD} "$@"
         else
             echo "Unknown command: ${CMD}" && exit 1
