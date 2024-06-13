@@ -36,6 +36,7 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
+readonly RESTIC_COMMANDS=(init backup trigger forget prune status logs snapshots restore cleanup)
 readonly COMMANDS=(install init backup trigger forget prune status logs snapshots restore cleanup update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
@@ -888,25 +889,23 @@ function main() {
     else
         CMD=$1; shift;
         if [[ " ${COMMANDS[*]} " =~ ${CMD} ]]; then
-            if [ "${CMD}" = "install" ]; then
-                echo "Starting installation procedure..."
-                install
-                return $?
-            elif is_remote_repository; then
-                if is_run_by_systemd_timer; then
-                    echo "Defer mounting repository storage server..." 
-                else
-                    echo "Mounting repository storage server..."
-                    if sshfs_mount_server; then 
-                        echo "Respository storage server is mounted!"
+            if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]]; then
+                if is_remote_repository; then
+                    if is_run_by_systemd_timer; then
+                        echo "Defer mounting repository storage server..." 
                     else
-                        echo "Respository storage server is unavaliable!"
-                        exit 1 
+                        echo "Mounting repository storage server..."
+                        if sshfs_mount_server; then 
+                            echo "Respository storage server is mounted!"
+                        else
+                            echo "Respository storage server is unavaliable!"
+                            exit 1 
+                        fi
                     fi
                 fi
+            else
+                ${CMD} "$@"
             fi
-            
-            ${CMD} "$@"
         else
             echo "Unknown command: ${CMD}" && exit 1
         fi
