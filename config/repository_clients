@@ -11,3 +11,4 @@ root;lxc-adguardhome-sync;/opt/docker
 root;lxc-paperless-ngx;/opt/docker
 root;lxc-linkwarden;/opt/docker
 root;lxc-bookstack;/opt/docker
+root;lxc-it-tools;/opt/docker
