@@ -6,6 +6,8 @@ root;lxc-searxng-01;/opt/docker
 root;lxc-searxng-02;/opt/docker
 root;lxc-technitium-01;/opt/docker
 root;lxc-technitium-02;/opt/docker
+root;lxc-etcd-node-01;/opt/docker
+root;lxc-etcd-node-02;/opt/docker
 root;lxc-netbootxyz;/opt/docker
 root;lxc-adguardhome-sync;/opt/docker
 root;lxc-paperless-ngx;/opt/docker
