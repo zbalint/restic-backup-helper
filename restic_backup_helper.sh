@@ -709,7 +709,6 @@ function install() { # = Create required configuration files
         answer=""
         if is_remote_repository && [ "${CMD}" != "install" ]; then
             if sshfs_mount_server; then 
-                local result
                 init
                 sshfs_umount_server
             else
