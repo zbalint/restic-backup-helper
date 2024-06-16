@@ -19,3 +19,4 @@ root;lxc-linkwarden;/opt/docker
 root;lxc-bookstack;/opt/docker
 root;lxc-it-tools;/opt/docker
 root;lxc-gotify;/opt/docker
+root;lxc-uptimekuma;/opt/docker
