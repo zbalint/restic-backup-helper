@@ -3,10 +3,13 @@ root;srv02-prd-defra-oci;/opt/docker
 root;lxc-agh-dns-03;/opt/docker
 root;lxc-traefik-01;/opt/docker
 root;lxc-traefik-02;/opt/docker
+root;lxc-traefik-03;/opt/docker
 root;lxc-searxng-01;/opt/docker
 root;lxc-searxng-02;/opt/docker
+root;lxc-searxng-03;/opt/docker
 root;lxc-technitium-01;/opt/docker
 root;lxc-technitium-02;/opt/docker
+root;lxc-technitium-03;/opt/docker
 root;lxc-etcd-01;/opt/docker
 root;lxc-etcd-02;/opt/docker
 root;lxc-netbootxyz;/opt/docker
@@ -15,3 +18,4 @@ root;lxc-paperless-ngx;/opt/docker
 root;lxc-linkwarden;/opt/docker
 root;lxc-bookstack;/opt/docker
 root;lxc-it-tools;/opt/docker
+root;lxc-gotify;/opt/docker
