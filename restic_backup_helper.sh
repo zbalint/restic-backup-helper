@@ -850,11 +850,11 @@ function status() { # = Show the last and next backup times
         echo "${client}"
     done < "${repository_clients_list}"
 
-    # show backup result for each client
-    cat ${BACKUP_RESULT_FILE}
-
     echo "Missing clients: $(find_tags_without_client | wc -l)"
     find_tags_without_client
+
+    # show backup result for each client
+    cat ${BACKUP_RESULT_FILE}
     
     # show repo path
     echo "Repository path: $(get_repository_path)"
