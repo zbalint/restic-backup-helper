@@ -36,8 +36,8 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # script settings
-readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore cleanup)
-readonly COMMANDS=(install init backup trigger forget prune status snapshots restore cleanup logs update enable disable help)
+readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore unlock cleanup)
+readonly COMMANDS=(install init backup trigger forget prune status snapshots restore unlock cleanup logs update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
 # readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
@@ -73,6 +73,8 @@ function __cleanup() {
             mv "${temp_file}" "${mount_path_list_file}"
         fi
     fi
+
+    restic_unlock
 }
 
 function validate_file_permission() {
@@ -526,6 +528,10 @@ function restic_restore() {
     call_restic restore latest --tag "${backup_tag}" --host "${backup_host}" --path "${backup_path}" --target "${restore_path}"
 }
 
+function restic_unlock() {
+    call_restic unlock
+}
+
 function find_tags_without_client() {
     local tag_list_temp_file="${WORK_DIRECTORY}/restic_tag_list"
     local client_list_file="${REPOSITORY_CLIENTS_FILE}"
@@ -779,6 +785,10 @@ function restore() { # [user@host:path] = Restore data from snapshot (default 'l
     disable
     restore_client "${client}"
     enable
+}
+
+function unlock() {
+    restic_unlock
 }
 
 function cleanup() { # = Remove snapshots without client
