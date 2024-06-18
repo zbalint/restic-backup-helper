@@ -40,7 +40,8 @@ readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots rest
 readonly COMMANDS=(install init backup trigger forget prune status snapshots restore cleanup logs update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
-readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
+# readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
+readonly BACKUP_FREQUENCY="00/2:00"
 readonly BACKUP_NAME="restic_backup"
 readonly BACKUP_SERVICE="/etc/systemd/system/${BACKUP_NAME}.service"
 readonly BACKUP_TIMER="/etc/systemd/system/${BACKUP_NAME}.timer"
