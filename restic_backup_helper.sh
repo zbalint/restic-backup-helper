@@ -643,7 +643,7 @@ function send_notification() {
     local priority=5
     title="$(hostname)"
 
-    curl -m 10 --retry 1 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
+    curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
 }
 
 
