@@ -882,7 +882,7 @@ function remove_rclone() {
     apt remove -y rclone fuse3
 }
 
-function driver() {
+function driver() { # = Change filesystem driver
     read -r -p "Select repository filesystem driver (ex.: sshfs or rclone): " repository_fs_driver
 
     if [ "${repository_fs_driver}" == "sshfs" ]; then
