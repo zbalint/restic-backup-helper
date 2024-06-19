@@ -29,6 +29,9 @@ readonly REPOSITORY_RETENTION_KEEP_DAILY=7
 readonly REPOSITORY_RETENTION_KEEP_HOURLY=48
 readonly REPOSITORY_RETENTION_KEEP_LAST=10
 
+# gotify settings
+readonly NOTIFICATION_SERVER_URL="https://gotify.lab.escapethelan.com/message?token=Aw.9-W0BgUKuxNw"
+
 # healthcheck.io settings consts
 readonly HEALTHCHECKS_IO_ID_FILE="${CONFIG_DIRECTORY}/healthchecks_io_id"
 
@@ -83,8 +86,6 @@ function __cleanup() {
             mv "${temp_file}" "${mount_path_list_file}"
         fi
     fi
-
-    restic_unlock
 }
 
 function validate_file_permission() {
@@ -636,6 +637,15 @@ function remote_server_remount() {
     remote_server_mount
 }
 
+function send_notification() {
+    local title
+    local message="$*"
+    local priority=5
+    title="$(hostname)"
+
+    curl -m 10 --retry 1 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}" >/dev/null
+}
+
 
 function healthcheck() {
     local status="$1"
@@ -809,6 +819,10 @@ function backup_clients() {
             else
                 echo "Restic backup for client '${client}' failed!"
                 echo "[ERROR] ${client}" >> "${status_file}"
+                remote_user=$(get_remote_user "${client}")
+                remote_host=$(get_remote_host "${client}")
+                remote_path=$(get_remote_path "${client}")
+                send_notification "Backup failed for client: [${remote_user}@${remote_host}:${remote_path}]"
                 status=1
             fi
         fi
@@ -1044,6 +1058,7 @@ function backup() { # = Run backup now
     else
         echo "Restic backup failed!"
         healthcheck "failed"
+        send_notification "Backup failed!"
         exit 1
     fi
 }
@@ -1171,13 +1186,16 @@ function main() {
     else
         CMD=$1; shift;
         if [[ " ${COMMANDS[*]} " =~ ${CMD} ]]; then
-            if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]] && is_remote_repository; then
+            if [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]] && ! is_remote_repository; then
+                restic_unlock
+            elif [[ " ${RESTIC_COMMANDS[*]} " =~ ${CMD} ]] && is_remote_repository; then
                 if [ "${CMD}" = "backup" ] && is_run_by_systemd_timer; then
                     echo "Defer mounting repository storage server..." 
                 else
                     echo "Mounting repository storage server..."
                     if remote_server_mount; then 
                         echo "Respository storage server is mounted!"
+                        restic_unlock
                     else
                         echo "Respository storage server is unavaliable!"
                         exit 1 
