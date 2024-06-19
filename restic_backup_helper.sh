@@ -10,8 +10,12 @@ readonly BASE_DIRECTORY="/root/restic_backup"
 readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
 readonly WORK_DIRECTORY="${BASE_DIRECTORY}/work"
 
+# default remote filesystem driver
+REMOTE_FILESYSTEM_DRIVER="sshfs"
+
 # repository settings consts
 readonly REPOSITORY_TYPE_FILE="${CONFIG_DIRECTORY}/repository_type"
+readonly REPOSITORY_FS_DRIVER_FILE="${CONFIG_DIRECTORY}/repository_fs_driver"
 readonly REPOSITORY_PATH_FILE="${CONFIG_DIRECTORY}/repository_path"
 readonly REPOSITORY_PASS_FILE="${CONFIG_DIRECTORY}/repository_pass"
 readonly REPOSITORY_SERVER_FILE="${CONFIG_DIRECTORY}/repository_server"
@@ -28,12 +32,18 @@ readonly REPOSITORY_RETENTION_KEEP_LAST=10
 # healthcheck.io settings consts
 readonly HEALTHCHECKS_IO_ID_FILE="${CONFIG_DIRECTORY}/healthchecks_io_id"
 
-# sshfs settings consts
 readonly LOCAL_MOUNT_PATH="/mnt"
 readonly LOCAL_MOUNT_PATH_LIST_FILE="${WORK_DIRECTORY}/restic_mount_path_list"
+
+# sshfs settings consts
 readonly SSHFS_SERVER_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
+
+# rclone settings consts
+readonly RCLONE_SERVER_OPTIONS="--allow-other"
+readonly RCLONE_BACKUP_OPTIONS="--allow-other --read-only"
+readonly RCLONE_RESTORE_OPTIONS="--allow-other"
 
 # script settings
 readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore unlock cleanup)
@@ -58,7 +68,7 @@ function __cleanup() {
         do
             if [ -n "${mount_path}" ] && dir_is_exists "${mount_path}" && dir_is_mounted "${mount_path}" ; then
                 echo -n "Unmounting ${mount_path}..."
-                if sshfs_umount "${mount_path}"; then
+                if remote_umount "${mount_path}"; then
                     echo "OK"
                 else 
                     echo "FAILED"
@@ -132,6 +142,10 @@ function save_mount_path() {
 
 function get_repository_type() {
     read_file "${REPOSITORY_TYPE_FILE}"
+}
+
+function get_repository_fs_driver() {
+    read_file "${REPOSITORY_FS_DRIVER_FILE}"
 }
 
 function get_repository_path() {
@@ -213,6 +227,14 @@ function is_installed() {
     return 1
 }
 
+function is_package_installed() {
+    if apt-cache policy fuse3 | grep Installed | grep -v "none" >/dev/null; then
+        return 0
+    fi
+
+    return 1
+}
+
 function is_restic_installed() {
     if is_installed "restic"; then
         return 0
@@ -229,6 +251,23 @@ function is_sshfs_installed() {
     return 1
 }
 
+function is_rclone_installed() {
+    if is_installed "rclone"; then
+        return 0
+    fi
+
+    return 1
+}
+
+function is_fuse_installed() {
+    if is_package_installed "fuse"; then
+        return 0
+    fi
+
+    return 1
+}
+
+
 function validate_restic_installation() {
     if ! is_restic_installed; then
         echo "You need to install restic."
@@ -239,6 +278,27 @@ function validate_restic_installation() {
 function validate_sshfs_installation() {
     if ! is_sshfs_installed; then
         echo "You need to install sshfs."
+        exit 1
+    fi
+}
+
+function validate_rclone_installation() {
+    if ! is_rclone_installed || ! is_fuse_installed; then
+        echo "You need to install rclone and fuse."
+        exit 1
+    fi
+}
+
+function validate_fs_driver_installation() {
+    local fs_driver
+    fs_driver="$(get_repository_fs_driver)"
+
+    if [ "${fs_driver}" == "sshfs" ]; then
+        validate_sshfs_installation
+    elif [ "${fs_driver}" == "rclone" ]; then
+        validate_rclone_installation
+    else
+        echo "ERROR: Invalid filesystem driver: ${fs_driver}"
         exit 1
     fi
 }
@@ -262,6 +322,14 @@ function validate_repository_type_file() {
         if is_local_repository || is_remote_repository; then
             return 0
         fi
+    fi
+
+    return 1
+}
+
+function validate_repository_fs_driver_file() {
+    if file_is_exists "${REPOSITORY_FS_DRIVER_FILE}" && validate_file_permission "${REPOSITORY_FS_DRIVER_FILE}" "600"; then
+        return 0
     fi
 
     return 1
@@ -322,6 +390,12 @@ function validate_config_files_and_permissions() {
         exit 1
     fi
 
+    if ! validate_repository_fs_driver_file; then
+        echo "File does not exists or has incorrect permissions. Run: "
+        echo "  chmod 0600 $(realpath ${REPOSITORY_FS_DRIVER_FILE})"
+        exit 1
+    fi
+
     if ! validate_repository_path_file; then
         echo "File does not exists or has incorrect permissions. Run: "
         echo "  chmod 0600 $(realpath ${REPOSITORY_PATH_FILE})"
@@ -356,7 +430,9 @@ function validate_install() {
         return 1
     fi
  
-    if ! validate_repository_path_file; then
+    if ! validate_repository_fs_driver_file; then
+        return 1
+    elif ! validate_repository_path_file; then
         return 1
     elif ! validate_repository_pass_file; then
         return 1
@@ -369,6 +445,62 @@ function validate_install() {
     fi
 
     return 1
+}
+
+function rclone_obscure() {
+    local string="$*"
+    echo "${string}" | rclone obscure -
+}
+
+function rclone_create_config() {
+    # remote ssh user
+    local remote_user="$1"
+    # remote ssh host
+    local remote_host="$2"
+    # tailscale ssh does not require password, but rclone does so we create a fake password just for the rclone config
+    local remote_pass
+    remote_pass="$(rclone_obscure ${remote_user})"
+    # rclone config location (note: this script rewrite this config)
+    local rclone_config_path="/root/.config/rclone/rclone.conf"
+
+    # create or replace existing config
+    {
+        echo "[${remote_host}]"
+        echo "type = sftp"
+        echo "host = ${remote_host}"
+        echo "user = ${remote_user}"
+        echo "pass = ${remote_pass}"
+        echo "shell_type = unix"
+    } > "${rclone_config_path}"
+}
+
+function rclone_mount() {
+    local remote_user="$1"
+    local remote_host="$2"
+    local remote_path="$3"
+    local local_path="$4"
+    local rclone_options="$5"
+
+    if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
+        echo "The ${local_path} path is already mounted!"
+        return 1
+    fi
+
+    rclone_create_config "${remote_user}" "${remote_host}"
+    rm -f ~/.ssh/known_hosts
+    ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts && \
+    rclone mount --daemon ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" && \
+    dir_is_exists "${local_path}" && \
+    dir_is_mounted "${local_path}" && \
+    save_mount_path "${local_path}"
+}
+
+function rclone_umount() {
+    local local_path="$1"
+
+    dir_is_exists "${local_path}" && \
+    dir_is_mounted "${local_path}" && \
+    umount "${local_path}"
 }
 
 function sshfs_mount() {
@@ -399,37 +531,109 @@ function sshfs_umount() {
     umount "${local_path}"
 }
 
-function sshfs_mount_server() {
+function remote_mount() {
+    local fs_handler="${REMOTE_FILESYSTEM_DRIVER}"
+    local mount_type="$1"
+    local remote_user="$2"
+    local remote_host="$3"
+    local remote_path="$4"
+    local local_path="$5"
+    
+    if ! dir_is_exists "${local_path}"; then
+        mkdir -p "${local_path}"
+    fi
+
+    if dir_is_mounted "${local_path}"; then
+        echo "ERROR: Local path is already mounted: ${local_path}"
+        return 1
+    fi
+
+    if [ "${fs_handler}" == "sshfs" ]; then
+        local mount_options="${SSHFS_BACKUP_OPTIONS}"
+        if [ "${mount_type}" == "backup" ]; then
+            mount_options="${SSHFS_BACKUP_OPTIONS}"
+        elif [ "${mount_type}" == "restore" ]; then
+            mount_options="${SSHFS_RESTORE_OPTIONS}"
+        elif [ "${mount_type}" == "repository" ]; then
+            mount_options="${SSHFS_SERVER_OPTIONS}"
+        else
+            echo "ERROR: Invalid mount type: ${mount_type}"
+            return 1
+        fi
+        sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"
+        return $?
+    elif [ "${fs_handler}" == "rclone" ]; then
+        local mount_options="${RCLONE_BACKUP_OPTIONS}"
+        if [ "${mount_type}" == "backup" ]; then
+            mount_options="${RCLONE_BACKUP_OPTIONS}"
+        elif [ "${mount_type}" == "restore" ]; then
+            mount_options="${RCLONE_RESTORE_OPTIONS}"
+        elif [ "${mount_type}" == "repository" ]; then
+            mount_options="${RCLONE_SERVER_OPTIONS}"
+        else
+            echo "ERROR: Invalid mount type: ${mount_type}"
+            return 1
+        fi
+        rclone_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"
+        return $?
+    else
+        echo "ERROR: Invalid mount driver: ${fs_handler}"
+        return 1
+    fi
+
+    return 1
+}
+
+function remote_umount() {
+    local fs_handler="${REMOTE_FILESYSTEM_DRIVER}"
+    local local_path="$1"
+
+    if [ "${fs_handler}" == "sshfs" ]; then
+        sshfs_umount "${local_path}"
+        return $?
+    elif [ "${fs_handler}" == "rclone" ]; then
+        rclone_umount "${local_path}"
+        return $?
+    else
+        echo "ERROR: Invalid mount driver: ${fs_handler}"
+        return 1
+    fi
+    return 1
+}
+
+function remote_server_mount() {
     local repository_server
     local repository_server_user
     local repository_server_host
     local repository_remote_path
     local repository_local_path
+    local mount_type="repository"
 
     repository_server="$(get_repository_server)"
     repository_server_user="$(get_remote_user "${repository_server}")"
     repository_server_host="$(get_remote_host "${repository_server}")"
     repository_remote_path="$(get_remote_path "${repository_server}")"
     repository_local_path="$(get_repository_path)"
+
     mkdir -p "${repository_local_path}" && \
-    sshfs_mount "${repository_server_user}" "${repository_server_host}" "${repository_remote_path}" "${repository_local_path}" "${SSHFS_SERVER_OPTIONS}"
+    remote_mount "${mount_type}" "${repository_server_user}" "${repository_server_host}" "${repository_remote_path}" "${repository_local_path}"
 }
 
-function sshfs_umount_server() {
-    sshfs_umount "$(get_repository_path)"
+function remote_server_umount() {
+    remote_umount "$(get_repository_path)"
 }
 
-function sshfs_remount_server() {
+function remote_server_remount() {
     local repository_path
     repository_path="$(get_repository_path)"
 
     if dir_is_exists "${repository_path}" && dir_is_mounted "${repository_path}"; then
-        sshfs_umount_server
+        remote_server_umount
     elif ! dir_is_exists "${repository_path}"; then
         mkdir -p "${repository_path}"
     fi
 
-    sshfs_mount_server
+    remote_server_mount
 }
 
 
@@ -465,6 +669,7 @@ function call_restic() {
     local repository_pass_file="${REPOSITORY_PASS_FILE}"
 
     restic --verbose --repository-file "${repository_path_file}" --password-file "${repository_pass_file}" "$@"
+    # restic --verbose --repository-file "${repository_path_file}" --password-file "${repository_pass_file}" "$@" --ignore-inode
 }
 
 function restic_init() {
@@ -578,10 +783,11 @@ function backup_client() {
     remote_path=$(get_remote_path "${client}")
     local_path=$(get_local_path "${remote_host}" "${remote_path}")
     
-    sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${SSHFS_BACKUP_OPTIONS}" && \
+    remote_mount "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" && \
     create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
     local backup_result=$?
-    sshfs_umount "${local_path}"
+    remote_umount "${local_path}"
+    
     return ${backup_result}
 }
 
@@ -626,9 +832,9 @@ function restore_client() {
     remote_path=$(get_remote_path "${client}")
     local_path=$(get_local_path "${remote_host}" "${remote_path}")
 
-    sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${SSHFS_RESTORE_OPTIONS}" && \
+    remote_mount "restore" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" && \
     restore_backup "/" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}" "${local_path}"
-    sshfs_umount "${local_path}"
+    remote_umount "${local_path}"
 }
 
 function help() { # = Show this help
@@ -650,8 +856,13 @@ function install_sshfs() {
     apt install -y sshfs
 }
 
+function install_rclone() {
+    apt install -y rclone fuse3 && rclone self-update
+}
+
 function install() { # = Create required configuration files
     local repository_type
+    local repository_fs_driver
     local repository_server
     local repository_path
     local repository_pass
@@ -689,6 +900,8 @@ function install() { # = Create required configuration files
         read -r -p "Repository server (ex.: user;host;/path): " repository_server && echo "${repository_server}" > "${REPOSITORY_SERVER_FILE}" && chmod 600 "${REPOSITORY_SERVER_FILE}"
     fi
 
+    read -r -p "Repository filesystem driver (ex.: sshfs or rclone): " repository_fs_driver && echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
+    
     read -r -p "Repository path (ex.: /repository): " repository_path && echo "${repository_path:-/repository}" > "${REPOSITORY_PATH_FILE}" && chmod 600 "${REPOSITORY_PATH_FILE}"
 
     read -r -sp "Repository password (hidden): " repository_pass && echo "********" && echo "${repository_pass}" > "${REPOSITORY_PASS_FILE}" && chmod 600 "${REPOSITORY_PASS_FILE}"
@@ -703,21 +916,35 @@ function install() { # = Create required configuration files
         fi
     fi
 
-    if ! is_sshfs_installed; then
-        read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
-        if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
-            answer=""
-            install_sshfs
+    if [ "${repository_fs_driver}" == "sshfs" ]; then
+        if ! is_sshfs_installed; then
+            read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
+            if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+                answer=""
+                install_sshfs
+            fi
         fi
+    elif [ "${repository_fs_driver}" == "rclone" ]; then
+        if ! is_rclone_installed || ! is_fuse_installed; then
+            read -r -p "Do you wish to install rclone and fuse? (you can do it later manually) (yes/no): " answer
+            if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+                answer=""
+                install_rclone
+            fi
+        fi
+    else
+        echo "ERROR: Invalid filesystem driver: ${repository_fs_driver}"
+        exit 1
     fi
+
 
     read -r -p "Do you wish to initialize the repository? (you can do it later with the 'init' command) (yes/no): " answer
     if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
         answer=""
         if is_remote_repository && [ "${CMD}" != "install" ]; then
-            if sshfs_mount_server; then 
+            if remote_server_mount; then 
                 init
-                sshfs_umount_server
+                remote_server_umount
             else
                 echo "Respository storage server is unavaliable!"
                 exit 1
@@ -854,6 +1081,8 @@ function disable() { # = Disable scheduled backups and remove systemd timer
 function status() { # = Show the last and next backup times 
     local repository_clients_list="${REPOSITORY_CLIENTS_FILE}"
     # list clients
+    echo "Filesystem driver: $(get_repository_fs_driver)"
+
     echo "Backup clients: $(< "${repository_clients_list}" wc -l)"
     while IFS= read -r client
     do
@@ -890,9 +1119,11 @@ function main() {
     validate_script_permissions
     if ! validate_install; then install; fi
     validate_restic_installation
-    validate_sshfs_installation
     update_repository_clients_file
     validate_config_files_and_permissions
+    validate_fs_driver_installation
+
+    REMOTE_FILESYSTEM_DRIVER="$(get_repository_fs_driver)"
 
     if test $# = 0; then
         help
@@ -904,7 +1135,7 @@ function main() {
                     echo "Defer mounting repository storage server..." 
                 else
                     echo "Mounting repository storage server..."
-                    if sshfs_mount_server; then 
+                    if remote_server_mount; then 
                         echo "Respository storage server is mounted!"
                     else
                         echo "Respository storage server is unavaliable!"
