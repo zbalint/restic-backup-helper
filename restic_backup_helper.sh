@@ -47,7 +47,7 @@ readonly RCLONE_RESTORE_OPTIONS="--allow-other --no-checksum"
 
 # script settings
 readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore unlock cleanup)
-readonly COMMANDS=(install init backup trigger forget prune status snapshots restore unlock cleanup logs update enable disable help)
+readonly COMMANDS=(install init backup trigger forget prune status snapshots restore unlock cleanup driver logs update enable disable help)
 
 # readonly BACKUP_FREQUENCY="hourly"
 # readonly BACKUP_FREQUENCY="*-*-* 00,06,12,18:00:00"
@@ -856,8 +856,49 @@ function install_sshfs() {
     apt install -y sshfs
 }
 
+function remove_sshfs() {
+    apt remove -y sshfs
+}
+
 function install_rclone() {
     apt install -y rclone fuse3 && rclone self-update
+}
+
+function remove_rclone() {
+    apt remove -y rclone fuse3
+}
+
+function driver() {
+    read -r -p "Select repository filesystem driver (ex.: sshfs or rclone): " repository_fs_driver
+
+    if [ "${repository_fs_driver}" == "sshfs" ]; then
+        if ! is_sshfs_installed; then
+            read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
+            if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+                answer=""
+                echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
+                if is_rclone_installed; then
+                    remove_rclone
+                fi
+                install_sshfs
+            fi
+        fi
+    elif [ "${repository_fs_driver}" == "rclone" ]; then
+        if ! is_rclone_installed || ! is_fuse_installed; then
+            read -r -p "Do you wish to install rclone and fuse? (you can do it later manually) (yes/no): " answer
+            if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
+                answer=""
+                echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
+                if is_sshfs_installed; then
+                    remove_sshfs
+                fi
+                install_rclone
+            fi
+        fi
+    else
+        echo "ERROR: Invalid filesystem driver: ${repository_fs_driver}"
+        exit 1
+    fi
 }
 
 function install() { # = Create required configuration files
