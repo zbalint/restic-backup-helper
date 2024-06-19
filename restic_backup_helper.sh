@@ -41,9 +41,9 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # rclone settings consts
-readonly RCLONE_SERVER_OPTIONS="--allow-other"
-readonly RCLONE_BACKUP_OPTIONS="--allow-other --read-only"
-readonly RCLONE_RESTORE_OPTIONS="--allow-other"
+readonly RCLONE_SERVER_OPTIONS="--allow-other --no-checksum"
+readonly RCLONE_BACKUP_OPTIONS="--allow-other --no-checksum --read-only"
+readonly RCLONE_RESTORE_OPTIONS="--allow-other --no-checksum"
 
 # script settings
 readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore unlock cleanup)
