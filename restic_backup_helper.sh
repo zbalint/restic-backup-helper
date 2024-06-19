@@ -30,7 +30,7 @@ readonly REPOSITORY_RETENTION_KEEP_HOURLY=48
 readonly REPOSITORY_RETENTION_KEEP_LAST=10
 
 # gotify settings
-readonly NOTIFICATION_SERVER_URL="https://gotify.lab.escapethelan.com/message?token=Aw.9-W0BgUKuxNw"
+readonly NOTIFICATION_SERVER_URL="https://gotify.lab.escapethelan.com/message?token=Av4r4jsfN6aqn8A"
 
 # healthcheck.io settings consts
 readonly HEALTHCHECKS_IO_ID_FILE="${CONFIG_DIRECTORY}/healthchecks_io_id"
