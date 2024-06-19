@@ -1070,7 +1070,7 @@ function restore() { # [user@host:path] = Restore data from snapshot (default 'l
     enable
 }
 
-function unlock() {
+function unlock() { # = Remove repository lock
     restic_unlock
 }
 
