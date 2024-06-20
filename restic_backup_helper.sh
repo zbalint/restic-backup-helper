@@ -264,6 +264,14 @@ function is_rclone_installed() {
     return 1
 }
 
+function is_jq_installed() {
+    if is_installed "jq"; then
+        return 0
+    fi
+
+    return 1
+}
+
 function is_fuse_installed() {
     if is_package_installed "fuse"; then
         return 0
@@ -271,7 +279,6 @@ function is_fuse_installed() {
 
     return 1
 }
-
 
 function validate_restic_installation() {
     if ! is_restic_installed; then
@@ -281,15 +288,15 @@ function validate_restic_installation() {
 }
 
 function validate_sshfs_installation() {
-    if ! is_sshfs_installed; then
-        echo "You need to install sshfs."
+    if ! is_sshfs_installed || ! is_fuse_installed; then
+        echo "You need to install sshfs and fuse3."
         exit 1
     fi
 }
 
 function validate_rclone_installation() {
-    if ! is_rclone_installed || ! is_fuse_installed; then
-        echo "You need to install rclone and fuse."
+    if ! is_rclone_installed || ! is_fuse_installed || ! is_jq_installed; then
+        echo "You need to install rclone, fuse3 and jq."
         exit 1
     fi
 }
@@ -483,7 +490,13 @@ function rclone_create_config() {
 
 function is_rclone_sync_finished() {
     local address="$1"
+    
     rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add'
+    if [[ $(rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add') -gt 0 ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 function start_rclone() {
@@ -494,20 +507,27 @@ function start_rclone() {
     rclone "$@" --log-file="${log_file}" -log-level=INFO &
     sleep 1
 
-    # register_trap_callback "stop_rclone ${RCLONE_RC_ADDRESS}"
     return 0
+}
+
+function is_rclone_running() {
+    kill -0 "$(pidof rclone)" >/dev/null 2>&1
 }
 
 function stop_rclone() {
     local address="$1"
     echo "Stopping rclone at address: ${address}."
-    is_rclone_sync_finished "${address}"
     while [[ $(rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add') -gt 0 ]]; do
-        is_rclone_sync_finished "${address}"
         sleep 1
     done
-    is_rclone_sync_finished "${address}"
-    wget -q -O- --method POST "http://${address}/core/quit"
+    while is_rclone_running ; do
+        wget -q -O- --method POST "http://${address}/core/quit" >/dev/null 2>&1
+        sleep 1
+    done
+    while [[ $(rclone rc --rc-addr="${address}" vfs/stats >/dev/null 2>&1) -eq 5 ]]; do
+        wget -q -O- --method POST "http://${address}/core/quit" >/dev/null 2>&1
+        sleep 1
+    done
 }
 
 function rclone_mount() {
@@ -518,10 +538,18 @@ function rclone_mount() {
     local local_path="$5"
     local rclone_options="$6"
 
+    echo "Mounting rclone drive: ${local_path}"
+
+    
+    if is_rclone_running; then
+        stop_rclone "${rc_address}"
+    fi
+
     if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
         echo "The ${local_path} path is already mounted!"
         return 1
     fi
+
 
     RCLONE_RC_ADDRESS="${rc_address}"
 
@@ -537,9 +565,11 @@ function rclone_mount() {
 function rclone_umount() {
     local local_path="$1"
 
+    echo "Unmounting rclone drive: ${local_path}"
+
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
-    stop_rclone "${RCLONE_RC_ADDRESS}" && \
+    stop_rclone "${RCLONE_RC_ADDRESS}"
     umount "${local_path}"
 }
 
@@ -549,6 +579,8 @@ function sshfs_mount() {
     local remote_path="$3"
     local local_path="$4"
     local sshfs_options="$5"
+
+    echo "Mounting sshfs drive: ${local_path}"
 
     if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
         echo "The ${local_path} path is already mounted!"
@@ -565,6 +597,8 @@ function sshfs_mount() {
 
 function sshfs_umount() {
     local local_path="$1"
+
+    echo "Unmounting sshfs drive: ${local_path}"
 
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
@@ -585,7 +619,6 @@ function remote_mount() {
 
     if dir_is_mounted "${local_path}"; then
         echo "ERROR: Local path is already mounted: ${local_path}"
-        return 1
     fi
 
     if [ "${fs_handler}" == "sshfs" ]; then
@@ -600,8 +633,14 @@ function remote_mount() {
             echo "ERROR: Invalid mount type: ${mount_type}"
             return 1
         fi
-        sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"
-        return $?
+        if sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
+            echo "Sshfs drive successfully mounted: ${local_path}"
+            return 0
+        else
+            echo "ERROR: Failed to mount sshfs drive: ${local_path}"
+            return 1
+        fi
+        return 1
     elif [ "${fs_handler}" == "rclone" ]; then
         local rc_address
         local mount_options="${RCLONE_BACKUP_OPTIONS}"
@@ -619,10 +658,10 @@ function remote_mount() {
             return 1
         fi
         if rclone_mount "${rc_address}" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
-            echo "Rclone mount success"
+            echo "Rclone drive successfully mounted: ${local_path}"
             return 0
         else
-            echo "Rclone mount failed"
+            echo "ERROR: Failed to mount rclone drive: ${local_path}"
             return 1
         fi
         return 1
@@ -692,8 +731,7 @@ function send_notification() {
     local priority=5
     title="$(hostname)"
 
-    # curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
-    return 0
+    curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
 }
 
 
@@ -703,7 +741,6 @@ function healthcheck() {
     healthchecks_io_id="$(get_healthchecks_io_id)"
 
     # using curl (10 second timeout, retry up to 5 times):
-    return 0
 
     case "${status}" in
         start)
@@ -853,6 +890,7 @@ function backup_client() {
         remote_umount "${local_path}"
     else
         echo "Mount failed!"
+        remote_umount "${local_path}"
     fi
     return ${backup_result}
 }
@@ -950,11 +988,11 @@ function driver() { # = Change filesystem driver
     read -r -p "Select repository filesystem driver (ex.: sshfs or rclone): " repository_fs_driver
 
     if [ "${repository_fs_driver}" == "sshfs" ]; then
+        echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
         if ! is_sshfs_installed; then
             read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
             if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
                 answer=""
-                echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
                 if is_rclone_installed; then
                     remove_rclone
                 fi
@@ -962,11 +1000,11 @@ function driver() { # = Change filesystem driver
             fi
         fi
     elif [ "${repository_fs_driver}" == "rclone" ]; then
+        echo "${repository_fs_driver:rclone}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
         if ! is_rclone_installed || ! is_fuse_installed; then
             read -r -p "Do you wish to install rclone and fuse? (you can do it later manually) (yes/no): " answer
             if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
                 answer=""
-                echo "${repository_fs_driver:sshfs}" > "${REPOSITORY_FS_DRIVER_FILE}" && chmod 600 "${REPOSITORY_FS_DRIVER_FILE}"
                 if is_sshfs_installed; then
                     remove_sshfs
                 fi
@@ -1239,7 +1277,7 @@ function main() {
     validate_script_permissions
     if ! validate_install; then install; fi
     validate_restic_installation
-    # update_repository_clients_file
+    update_repository_clients_file
     validate_config_files_and_permissions
     validate_fs_driver_installation
 
