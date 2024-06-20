@@ -9,6 +9,7 @@ readonly BACKUP_SCRIPT_URL="https://raw.githubusercontent.com/zbalint/restic-bac
 readonly BASE_DIRECTORY="/root/restic_backup"
 readonly CONFIG_DIRECTORY="${BASE_DIRECTORY}/config"
 readonly WORK_DIRECTORY="${BASE_DIRECTORY}/work"
+readonly LOG_DIRECTORY="${BASE_DIRECTORY}/log"
 
 # default remote filesystem driver
 REMOTE_FILESYSTEM_DRIVER="sshfs"
@@ -44,9 +45,12 @@ readonly SSHFS_BACKUP_OPTIONS="ro,reconnect,cache=no,compression=no,Ciphers=chac
 readonly SSHFS_RESTORE_OPTIONS="reconnect,cache=no,compression=no,Ciphers=chacha20-poly1305@openssh.com"
 
 # rclone settings consts
-readonly RCLONE_SERVER_OPTIONS="--daemon --allow-other --vfs-cache-mode writes"
-readonly RCLONE_BACKUP_OPTIONS="--daemon --allow-other --read-only"
-readonly RCLONE_RESTORE_OPTIONS="--daemon --allow-other --vfs-cache-mode writes"
+readonly RCLONE_RC_SERVER_ADDRESS="127.0.0.1:55551"
+readonly RCLONE_RC_BACKUP_ADDRESS="127.0.0.1:55552"
+readonly RCLONE_RC_RESTORE_ADDRESS="127.0.0.1:55553"
+readonly RCLONE_SERVER_OPTIONS="--rc --rc-addr=${RCLONE_RC_SERVER_ADDRESS} --allow-other --no-checksum --vfs-cache-mode writes"
+readonly RCLONE_BACKUP_OPTIONS="--rc --rc-addr=${RCLONE_RC_BACKUP_ADDRESS} --allow-other --no-checksum --read-only"
+readonly RCLONE_RESTORE_OPTIONS="--rc --rc-addr=${RCLONE_RC_RESTORE_ADDRESS} --allow-other --no-checksum --vfs-cache-mode writes"
 
 # script settings
 readonly RESTIC_COMMANDS=(init backup trigger forget prune status snapshots restore unlock cleanup)
@@ -472,27 +476,59 @@ function rclone_create_config() {
         echo "user = ${remote_user}"
         echo "pass = ${remote_pass}"
         echo "shell_type = unix"
-        echo "use_insecure_cipher = false"
-        echo "disable_hashcheck = false"
+        echo "use_insecure_cipher = true"
+        echo "disable_hashcheck = true"
     } > "${rclone_config_path}"
 }
 
+function is_rclone_sync_finished() {
+    local address="$1"
+    rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add'
+}
+
+function start_rclone() {
+    local log_file
+    log_file="${LOG_DIRECTORY}/rclone-$(date +%Y%m%d_%H%M%S).log"
+
+    
+    rclone "$@" --log-file="${log_file}" -log-level=INFO &
+    sleep 1
+
+    # register_trap_callback "stop_rclone ${RCLONE_RC_ADDRESS}"
+    return 0
+}
+
+function stop_rclone() {
+    local address="$1"
+    echo "Stopping rclone at address: ${address}."
+    is_rclone_sync_finished "${address}"
+    while [[ $(rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add') -gt 0 ]]; do
+        is_rclone_sync_finished "${address}"
+        sleep 1
+    done
+    is_rclone_sync_finished "${address}"
+    wget -q -O- --method POST "http://${address}/core/quit"
+}
+
 function rclone_mount() {
-    local remote_user="$1"
-    local remote_host="$2"
-    local remote_path="$3"
-    local local_path="$4"
-    local rclone_options="$5"
+    local rc_address="$1"
+    local remote_user="$2"
+    local remote_host="$3"
+    local remote_path="$4"
+    local local_path="$5"
+    local rclone_options="$6"
 
     if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
         echo "The ${local_path} path is already mounted!"
         return 1
     fi
 
+    RCLONE_RC_ADDRESS="${rc_address}"
+
     rclone_create_config "${remote_user}" "${remote_host}"
     rm -f ~/.ssh/known_hosts
     ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts && \
-    rclone mount --daemon ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" && \
+    start_rclone mount ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" && \
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
     save_mount_path "${local_path}"
@@ -503,6 +539,7 @@ function rclone_umount() {
 
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
+    stop_rclone "${RCLONE_RC_ADDRESS}" && \
     umount "${local_path}"
 }
 
@@ -566,19 +603,29 @@ function remote_mount() {
         sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"
         return $?
     elif [ "${fs_handler}" == "rclone" ]; then
+        local rc_address
         local mount_options="${RCLONE_BACKUP_OPTIONS}"
         if [ "${mount_type}" == "backup" ]; then
+            rc_address="${RCLONE_RC_BACKUP_ADDRESS}"
             mount_options="${RCLONE_BACKUP_OPTIONS}"
         elif [ "${mount_type}" == "restore" ]; then
+            rc_address="${RCLONE_RC_RESTORE_ADDRESS}"
             mount_options="${RCLONE_RESTORE_OPTIONS}"
         elif [ "${mount_type}" == "repository" ]; then
+            rc_address="${RCLONE_RC_SERVER_ADDRESS}"
             mount_options="${RCLONE_SERVER_OPTIONS}"
         else
             echo "ERROR: Invalid mount type: ${mount_type}"
             return 1
         fi
-        rclone_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"
-        return $?
+        if rclone_mount "${rc_address}" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
+            echo "Rclone mount success"
+            return 0
+        else
+            echo "Rclone mount failed"
+            return 1
+        fi
+        return 1
     else
         echo "ERROR: Invalid mount driver: ${fs_handler}"
         return 1
@@ -645,7 +692,8 @@ function send_notification() {
     local priority=5
     title="$(hostname)"
 
-    curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
+    # curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
+    return 0
 }
 
 
@@ -655,6 +703,7 @@ function healthcheck() {
     healthchecks_io_id="$(get_healthchecks_io_id)"
 
     # using curl (10 second timeout, retry up to 5 times):
+    return 0
 
     case "${status}" in
         start)
@@ -681,7 +730,6 @@ function call_restic() {
     local repository_pass_file="${REPOSITORY_PASS_FILE}"
 
     restic --verbose --repository-file "${repository_path_file}" --password-file "${repository_pass_file}" "$@"
-    # restic --verbose --repository-file "${repository_path_file}" --password-file "${repository_pass_file}" "$@" --ignore-inode
 }
 
 function restic_init() {
@@ -733,7 +781,7 @@ function restic_backup() {
     local backup_tag="$2"
     local backup_host="$3"
 
-    call_restic backup --no-scan "${backup_path}" --tag "${backup_tag}" --host "${backup_host}"
+    call_restic backup --ignore-inode --no-scan "${backup_path}" --tag "${backup_tag}" --host "${backup_host}"
 }
 
 function restic_restore() {
@@ -795,11 +843,17 @@ function backup_client() {
     remote_path=$(get_remote_path "${client}")
     local_path=$(get_local_path "${remote_host}" "${remote_path}")
     
-    remote_mount "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" && \
-    create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
-    local backup_result=$?
-    remote_umount "${local_path}"
+
+    local backup_result=1
     
+
+    if remote_mount "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
+        create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
+        local backup_result=$?
+        remote_umount "${local_path}"
+    else
+        echo "Mount failed!"
+    fi
     return ${backup_result}
 }
 
@@ -830,9 +884,9 @@ function backup_clients() {
         fi
     done < "${repository_clients_list}"
 
-    if ! restic_forget || ! restic_check; then
-        return 1
-    fi
+    # if ! restic_forget || ! restic_check; then
+    #     return 1
+    # fi
     return ${status}
 }
 
@@ -848,9 +902,17 @@ function restore_client() {
     remote_path=$(get_remote_path "${client}")
     local_path=$(get_local_path "${remote_host}" "${remote_path}")
 
-    remote_mount "restore" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" && \
-    restore_backup "/" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}" "${local_path}"
-    remote_umount "${local_path}"
+    local restore_result=1
+
+    if remote_mount "restore" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
+        restore_backup "/" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}" "${local_path}"
+        restore_result=$?
+        remote_umount "${local_path}"
+    else
+        echo "Mount failed!"
+    fi
+
+    return ${restore_result}
 }
 
 function help() { # = Show this help
@@ -869,19 +931,19 @@ function install_restic() {
 }
 
 function install_sshfs() {
-    apt install -y sshfs
+    apt install -y sshfs fuse3
 }
 
 function remove_sshfs() {
-    apt remove -y sshfs
+    apt remove -y sshfs fuse3
 }
 
 function install_rclone() {
-    apt install -y rclone fuse3 && rclone self-update
+    apt install -y rclone fuse3 jq && rclone self-update
 }
 
 function remove_rclone() {
-    apt remove -y rclone fuse3
+    apt remove -y rclone fuse3 jq
 }
 
 function driver() { # = Change filesystem driver
@@ -1177,7 +1239,7 @@ function main() {
     validate_script_permissions
     if ! validate_install; then install; fi
     validate_restic_installation
-    update_repository_clients_file
+    # update_repository_clients_file
     validate_config_files_and_permissions
     validate_fs_driver_installation
 
