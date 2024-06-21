@@ -510,23 +510,38 @@ function start_rclone() {
     return 0
 }
 
+function is_rclone_mounted() {
+    local mount_path="$1"
+    mount | grep rclone | grep "${mount_path}" >/dev/null 2>&1
+}
+
 function is_rclone_running() {
     kill -0 "$(pidof rclone)" >/dev/null 2>&1
 }
 
+function is_rclone_rc_running() {
+    local address="$1"
+    ss -tulw | grep "${address}" >/dev/null 2>&1
+}
+
 function stop_rclone() {
     local address="$1"
+
     echo "Stopping rclone at address: ${address}."
     while [[ $(rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add') -gt 0 ]]; do
         sleep 1
     done
-    while is_rclone_running ; do
+    
+    local retry_count=1
+    local max_retry_count=5
+
+    while is_rclone_running && is_rclone_rc_running "${address}"; do
+        echo "Trying to stop clone... ${retry_count} / ${max_retry_count}"
         wget -q -O- --method POST "http://${address}/core/quit" >/dev/null 2>&1
-        sleep 1
-    done
-    while [[ $(rclone rc --rc-addr="${address}" vfs/stats >/dev/null 2>&1) -eq 5 ]]; do
-        wget -q -O- --method POST "http://${address}/core/quit" >/dev/null 2>&1
-        sleep 1
+        sleep ${retry_count}
+        if [[ ${retry_count} -lt ${max_retry_count} ]]; then
+            retry_count=$((retry_count+1))
+        fi
     done
 }
 
@@ -541,7 +556,7 @@ function rclone_mount() {
     echo "Mounting rclone drive: ${local_path}"
 
     
-    if is_rclone_running; then
+    if is_rclone_mounted "${local_path}" && is_rclone_running && is_rclone_rc_running "${rc_address}"; then
         stop_rclone "${rc_address}"
     fi
 
@@ -550,13 +565,13 @@ function rclone_mount() {
         return 1
     fi
 
-
     RCLONE_RC_ADDRESS="${rc_address}"
 
     rclone_create_config "${remote_user}" "${remote_host}"
     rm -f ~/.ssh/known_hosts
-    ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts && \
+    ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts
     start_rclone mount ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" && \
+    sleep 1 && \
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
     save_mount_path "${local_path}"
@@ -567,9 +582,8 @@ function rclone_umount() {
 
     echo "Unmounting rclone drive: ${local_path}"
 
-    dir_is_exists "${local_path}" && \
-    dir_is_mounted "${local_path}" && \
     stop_rclone "${RCLONE_RC_ADDRESS}"
+
     umount "${local_path}"
 }
 
@@ -605,6 +619,58 @@ function sshfs_umount() {
     umount "${local_path}"
 }
 
+function get_mount_options() {
+    local fs_handler="$1"
+    local mount_type="$2"
+
+    local mount_options="${SSHFS_BACKUP_OPTIONS}"
+
+    if [ "${fs_handler}" == "sshfs" ]; then
+        if [ "${mount_type}" == "backup" ]; then
+            mount_options="${SSHFS_BACKUP_OPTIONS}"
+        elif [ "${mount_type}" == "restore" ]; then
+            mount_options="${SSHFS_RESTORE_OPTIONS}"
+        elif [ "${mount_type}" == "repository" ]; then
+            mount_options="${SSHFS_SERVER_OPTIONS}"
+        else
+            echo "ERROR: Invalid mount type: ${mount_type}"
+            exit 1
+        fi
+    elif [ "${fs_handler}" == "rclone" ]; then
+        if [ "${mount_type}" == "backup" ]; then
+            mount_options="${RCLONE_BACKUP_OPTIONS}"
+        elif [ "${mount_type}" == "restore" ]; then
+            mount_options="${RCLONE_RESTORE_OPTIONS}"
+        elif [ "${mount_type}" == "repository" ]; then
+            mount_options="${RCLONE_SERVER_OPTIONS}"
+        else
+            echo "ERROR: Invalid mount type: ${mount_type}"
+            exit 1
+        fi
+    else
+        echo "ERROR: Invalid driver type: ${fs_handler}"
+        exit 1
+    fi
+    echo "${mount_options}"
+}
+
+function get_rc_address() {
+    local mount_type="$1"
+    if [ "${mount_type}" == "backup" ]; then
+        echo "${RCLONE_RC_BACKUP_ADDRESS}"
+        return 0
+    elif [ "${mount_type}" == "restore" ]; then
+        echo "${RCLONE_RC_RESTORE_ADDRESS}"
+        return 0
+    elif [ "${mount_type}" == "repository" ]; then
+        echo "${RCLONE_RC_SERVER_ADDRESS}"
+        return 0
+    else
+        echo "ERROR: Invalid mount type: ${mount_type}"
+        exit 1
+    fi
+}
+
 function remote_mount() {
     local fs_handler="${REMOTE_FILESYSTEM_DRIVER}"
     local mount_type="$1"
@@ -622,17 +688,8 @@ function remote_mount() {
     fi
 
     if [ "${fs_handler}" == "sshfs" ]; then
-        local mount_options="${SSHFS_BACKUP_OPTIONS}"
-        if [ "${mount_type}" == "backup" ]; then
-            mount_options="${SSHFS_BACKUP_OPTIONS}"
-        elif [ "${mount_type}" == "restore" ]; then
-            mount_options="${SSHFS_RESTORE_OPTIONS}"
-        elif [ "${mount_type}" == "repository" ]; then
-            mount_options="${SSHFS_SERVER_OPTIONS}"
-        else
-            echo "ERROR: Invalid mount type: ${mount_type}"
-            return 1
-        fi
+        local mount_options
+        mount_options="$(get_mount_options "${fs_handler}" "${mount_type}")"
         if sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
             echo "Sshfs drive successfully mounted: ${local_path}"
             return 0
@@ -643,27 +700,37 @@ function remote_mount() {
         return 1
     elif [ "${fs_handler}" == "rclone" ]; then
         local rc_address
-        local mount_options="${RCLONE_BACKUP_OPTIONS}"
-        if [ "${mount_type}" == "backup" ]; then
-            rc_address="${RCLONE_RC_BACKUP_ADDRESS}"
-            mount_options="${RCLONE_BACKUP_OPTIONS}"
-        elif [ "${mount_type}" == "restore" ]; then
-            rc_address="${RCLONE_RC_RESTORE_ADDRESS}"
-            mount_options="${RCLONE_RESTORE_OPTIONS}"
-        elif [ "${mount_type}" == "repository" ]; then
-            rc_address="${RCLONE_RC_SERVER_ADDRESS}"
-            mount_options="${RCLONE_SERVER_OPTIONS}"
-        else
-            echo "ERROR: Invalid mount type: ${mount_type}"
-            return 1
+        local mount_options
+        rc_address=$(get_rc_address "${mount_type}")
+        mount_options="$(get_mount_options "${fs_handler}" "${mount_type}")"
+
+        local retry_count=1
+        local max_retry_count=3
+
+        while [[ ${retry_count} -lt ${max_retry_count} ]]; do
+            if rclone_mount "${rc_address}" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
+                echo "Rclone drive successfully mounted: ${local_path}"
+                return 0
+            else
+                echo "ERROR: Failed to mount rclone drive: ${local_path}"
+                echo "Rertying in ${retry_count}s..."
+                sleep ${retry_count}
+            fi
+            retry_count=$((retry_count+1))
+        done
+
+        if [[ ${retry_count} -ge 1 ]]; then
+            echo "Rclone mount failed ${retry_count} times! Switching to sshfs mount."
+            mount_options="$(get_mount_options "sshfs" "${mount_type}")"
+            if sshfs_mount "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
+                echo "Sshfs drive successfully mounted: ${local_path}"
+                return 0
+            else
+                echo "ERROR: Failed to mount sshfs drive: ${local_path}"
+                return 1
+            fi
         fi
-        if rclone_mount "${rc_address}" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}" "${mount_options}"; then
-            echo "Rclone drive successfully mounted: ${local_path}"
-            return 0
-        else
-            echo "ERROR: Failed to mount rclone drive: ${local_path}"
-            return 1
-        fi
+
         return 1
     else
         echo "ERROR: Invalid mount driver: ${fs_handler}"
@@ -731,7 +798,7 @@ function send_notification() {
     local priority=5
     title="$(hostname)"
 
-    curl -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
+    curl --insecure -m 10 --retry 2 "${NOTIFICATION_SERVER_URL}" -F "title=${title}" -F "message=${message}" -F "priority=${priority}"
 }
 
 
@@ -744,19 +811,19 @@ function healthcheck() {
 
     case "${status}" in
         start)
-            curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"/start
+            curl --insecure -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"/start
             ;;
         stop)
             local status_payload
             status_payload=$(status 2>&1)
             # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
-            curl -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}"
+            curl --insecure -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}"
             ;;
         failed)
             local status_payload
             status_payload=$(status 2>&1)
             # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
-            curl -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}/fail"
+            curl --insecure -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}/fail"
             ;;
     esac
     
@@ -922,9 +989,9 @@ function backup_clients() {
         fi
     done < "${repository_clients_list}"
 
-    # if ! restic_forget || ! restic_check; then
-    #     return 1
-    # fi
+    if ! restic_forget || ! restic_check; then
+        return 1
+    fi
     return ${status}
 }
 
