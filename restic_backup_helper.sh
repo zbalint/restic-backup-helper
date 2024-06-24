@@ -74,11 +74,10 @@ function __cleanup() {
         while IFS= read -r mount_path
         do
             if [ -n "${mount_path}" ] && dir_is_exists "${mount_path}" && dir_is_mounted "${mount_path}" ; then
-                echo -n "Unmounting ${mount_path}..."
+                echo "Unmounting ${mount_path}..."
                 if remote_umount "${mount_path}"; then
-                    echo "OK"
+                    umount "${mount_path}"
                 else 
-                    echo "FAILED"
                     echo "${mount_path}" >> "${temp_file}"
                 fi
             fi
@@ -526,23 +525,40 @@ function is_rclone_rc_running() {
 
 function stop_rclone() {
     local address="$1"
+    local local_path="$2"
 
-    echo "Stopping rclone at address: ${address}."
+    
     while [[ $(rclone rc --rc-addr="${address}" vfs/stats | jq '.diskCache | [.uploadsInProgress, .uploadsQueued] | add') -gt 0 ]]; do
+        echo "Waiting for rclone to finish syncing..."
         sleep 1
     done
-    
-    local retry_count=1
-    local max_retry_count=5
 
-    while is_rclone_running && is_rclone_rc_running "${address}"; do
-        echo "Trying to stop clone... ${retry_count} / ${max_retry_count}"
+    if is_rclone_rc_running "${address}"; then
+        echo "Stopping rclone at address: ${address}."
         wget -q -O- --method POST "http://${address}/core/quit" >/dev/null 2>&1
-        sleep ${retry_count}
+    fi
+
+    local retry_count=1
+    local max_retry_count=10
+    
+    while is_rclone_mounted "${local_path}"; do
+        # echo "Waiting for rclone to stop... ${retry_count} / ${max_retry_count}" 
         if [[ ${retry_count} -lt ${max_retry_count} ]]; then
             retry_count=$((retry_count+1))
+            sleep 0.5
+        else
+            if dir_is_mounted "${local_path}"; then
+                umount "${local_path}"
+            fi
+            break
         fi
     done
+
+    if is_rclone_mounted "${local_path}"; then
+        return 1
+    fi
+
+    return 0
 }
 
 function rclone_mount() {
@@ -553,16 +569,19 @@ function rclone_mount() {
     local local_path="$5"
     local rclone_options="$6"
 
+    save_mount_path "${local_path}"
+
     echo "Mounting rclone drive: ${local_path}"
 
     
     if is_rclone_mounted "${local_path}" && is_rclone_running && is_rclone_rc_running "${rc_address}"; then
-        stop_rclone "${rc_address}"
+        stop_rclone "${rc_address}" "${local_path}"
     fi
 
     if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
         echo "The ${local_path} path is already mounted!"
-        return 1
+        echo "Force unmount ${local_path}..."
+        umount "${local_path}" && sleep 2
     fi
 
     RCLONE_RC_ADDRESS="${rc_address}"
@@ -570,11 +589,24 @@ function rclone_mount() {
     rclone_create_config "${remote_user}" "${remote_host}"
     rm -f ~/.ssh/known_hosts
     ssh-keyscan -t ssh-ed25519 "${remote_host}" >> ~/.ssh/known_hosts
-    start_rclone mount ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" && \
-    sleep 1 && \
+    start_rclone mount ${rclone_options} "${remote_host}:${remote_path}" "${local_path}" 
+
+    local retry_count=1
+    local max_retry_count=50
+
+    while ! is_rclone_mounted "${local_path}" && ! is_rclone_rc_running "${address}"; do
+        # echo "Waiting for rclone to start... ${retry_count} / ${max_retry_count}"
+        sleep 0.1
+        if [[ ${retry_count} -lt ${max_retry_count} ]]; then
+            retry_count=$((retry_count+1))
+        else
+            break
+        fi
+    done
+    
     dir_is_exists "${local_path}" && \
     dir_is_mounted "${local_path}" && \
-    save_mount_path "${local_path}"
+    is_rclone_mounted "${local_path}"
 }
 
 function rclone_umount() {
@@ -582,7 +614,7 @@ function rclone_umount() {
 
     echo "Unmounting rclone drive: ${local_path}"
 
-    stop_rclone "${RCLONE_RC_ADDRESS}"
+    stop_rclone "${RCLONE_RC_ADDRESS}" "${local_path}"
 
     umount "${local_path}"
 }
@@ -598,7 +630,9 @@ function sshfs_mount() {
 
     if dir_is_exists "${local_path}" && dir_is_mounted "${local_path}"; then
         echo "The ${local_path} path is already mounted!"
-        return 1
+        if ! sshfs_umount "${local_path}"; then
+            return 1
+        fi 
     fi
 
     rm -f ~/.ssh/known_hosts
@@ -816,13 +850,11 @@ function healthcheck() {
         stop)
             local status_payload
             status_payload=$(status 2>&1)
-            # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
             curl --insecure -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}"
             ;;
         failed)
             local status_payload
             status_payload=$(status 2>&1)
-            # curl -m 10 --retry 5 https://hc-ping.com/"${healthchecks_io_id}"
             curl --insecure -fsS -m 10 --retry 5 --data-raw "${status_payload}" https://hc-ping.com/"${healthchecks_io_id}/fail"
             ;;
     esac
@@ -894,7 +926,7 @@ function restic_restore() {
     local backup_host="$3"
     local backup_path="$4"
 
-    call_restic restore latest --tag "${backup_tag}" --host "${backup_host}" --path "${backup_path}" --target "${restore_path}"
+    call_restic restore latest --tag "${backup_tag}" --host "${backup_host}" --path "${backup_path}" --target "${restore_path}" --verify
 }
 
 function restic_unlock() {
@@ -1060,9 +1092,6 @@ function driver() { # = Change filesystem driver
             read -r -p "Do you wish to install sshfs? (you can do it later manually) (yes/no): " answer
             if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
                 answer=""
-                if is_rclone_installed; then
-                    remove_rclone
-                fi
                 install_sshfs
             fi
         fi
@@ -1072,9 +1101,6 @@ function driver() { # = Change filesystem driver
             read -r -p "Do you wish to install rclone and fuse? (you can do it later manually) (yes/no): " answer
             if [ "${answer}" = "yes" ] || [ "${answer}" = "YES" ] || [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
                 answer=""
-                if is_sshfs_installed; then
-                    remove_sshfs
-                fi
                 install_rclone
             fi
         fi
