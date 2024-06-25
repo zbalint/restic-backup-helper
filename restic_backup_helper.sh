@@ -138,6 +138,14 @@ function read_file() {
     cat "${file}"
 }
 
+function is_host_up() {
+    local ping_host="$1"
+    local ping_count=1
+    local ping_timeout=2
+
+    ping -c ${ping_count} -W ${ping_timeout} "${ping_host}" > /dev/null 2>&1
+}
+
 function save_mount_path() {
     local mount_path="$1"
 
@@ -706,12 +714,12 @@ function get_rc_address() {
 }
 
 function remote_mount() {
-    local fs_handler="${REMOTE_FILESYSTEM_DRIVER}"
-    local mount_type="$1"
-    local remote_user="$2"
-    local remote_host="$3"
-    local remote_path="$4"
-    local local_path="$5"
+    local fs_handler="$1"
+    local mount_type="$2"
+    local remote_user="$3"
+    local remote_host="$4"
+    local remote_path="$5"
+    local local_path="$6"
     
     if ! dir_is_exists "${local_path}"; then
         mkdir -p "${local_path}"
@@ -806,7 +814,7 @@ function remote_server_mount() {
     repository_local_path="$(get_repository_path)"
 
     mkdir -p "${repository_local_path}" && \
-    remote_mount "${mount_type}" "${repository_server_user}" "${repository_server_host}" "${repository_remote_path}" "${repository_local_path}"
+    remote_mount "${REMOTE_FILESYSTEM_DRIVER}" "${mount_type}" "${repository_server_user}" "${repository_server_host}" "${repository_remote_path}" "${repository_local_path}"
 }
 
 function remote_server_umount() {
@@ -983,13 +991,26 @@ function backup_client() {
     local backup_result=1
     
 
-    if remote_mount "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
+    if remote_mount "${REMOTE_FILESYSTEM_DRIVER}" "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
         create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
-        local backup_result=$?
+        backup_result=$?
         remote_umount "${local_path}"
     else
         echo "Mount failed!"
         remote_umount "${local_path}"
+    fi
+    
+    if [[ "${backup_result}" != "0" ]] && [ "${REMOTE_FILESYSTEM_DRIVER}" == "rclone" ] && is_host_up "${remote_host}"; then
+        echo "Backup failed with rclone fs driver, retrying with sshfs driver..."
+        send_notification "Rclone backup failed, switcing to sshfs: [${remote_user}@${remote_host}:${remote_path}]"
+        if remote_mount "sshfs" "backup" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
+            create_backup "${local_path}" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}"
+            backup_result=$?
+            remote_umount "${local_path}"
+        else
+            echo "Mount failed!"
+            remote_umount "${local_path}"
+        fi
     fi
     return ${backup_result}
 }
@@ -1006,6 +1027,12 @@ function backup_clients() {
     while IFS= read -r client
     do
         if [ -n "${client}" ]; then
+            if ! is_host_up "$(get_remote_host "${client}")"; then
+                echo "Restic backup for client '${client}' failed!"
+                echo "[DOWN ] ${client}" >> "${status_file}"
+                send_notification "Client is down: [${remote_user}@${remote_host}:${remote_path}]"
+                status=1
+            fi
             if backup_client "${client}"; then
                 echo "Restic backup for client '${client}' was successful!"
                 echo "[OK   ] ${client}" >> "${status_file}"
@@ -1041,7 +1068,7 @@ function restore_client() {
 
     local restore_result=1
 
-    if remote_mount "restore" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
+    if remote_mount "${REMOTE_FILESYSTEM_DRIVER}" "restore" "${remote_user}" "${remote_host}" "${remote_path}" "${local_path}"; then
         restore_backup "/" "${remote_user}@${remote_host}:${remote_path}" "${remote_host}" "${local_path}"
         restore_result=$?
         remote_umount "${local_path}"
