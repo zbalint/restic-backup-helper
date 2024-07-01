@@ -19,3 +19,4 @@ root;lxc-it-tools;/opt/docker
 root;lxc-web-check;/opt/docker
 root;lxc-gotify;/opt/docker
 root;lxc-uptimekuma;/opt/docker
+root;lxc-speedtest;/opt/docker

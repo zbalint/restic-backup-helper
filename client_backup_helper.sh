@@ -11,6 +11,7 @@ readonly TMP_PROJECTS_LIST_FILE_PATH="${TMP_DIR_PATH}/docker_projects.tmp"
 readonly BACKUP_FREQUENCY_ONE="*-*-* 03:00:00"
 readonly BACKUP_FREQUENCY_TWO="*-*-* 15:00:00"
 readonly BACKUP_ACCURACY_SEC="30min"
+readonly BACKUP_RAND_DELAY_SEC=1800 seconds
 readonly BACKUP_NAME="docker_backup"
 readonly BACKUP_SERVICE="/etc/systemd/system/${BACKUP_NAME}.service"
 readonly BACKUP_TIMER="/etc/systemd/system/${BACKUP_NAME}.timer"
@@ -127,6 +128,7 @@ Description=docker_backup $(realpath "${BASH_SOURCE[0]}") daily backups
 OnCalendar=${BACKUP_FREQUENCY_ONE}
 OnCalendar=${BACKUP_FREQUENCY_TWO}
 AccuracySec=${BACKUP_ACCURACY_SEC}
+RandomizedDelaySec=${BACKUP_RAND_DELAY_SEC}
 Persistent=true
 [Install]
 WantedBy=timers.target
