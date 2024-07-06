@@ -22,3 +22,4 @@ root;lxc-uptimekuma;/opt/docker
 root;lxc-speedtest;/opt/docker
 root;lxc-stirlingpdf;/opt/docker
 root;lxc-changedetectionio;/opt/docker
+root;lxc-redlib;/opt/docker
